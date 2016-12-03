@@ -32,7 +32,7 @@ func startLineReaderPool(buffer, workers int, workerFunc func(work <-chan *LineD
 }
 
 //function currying! this sets up a worker function given some constant parameters
-func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, uploadFunc func(*bytes.Buffer) error) func(<-chan *LineData) {
+func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, maxHttp chan bool, uploadFunc func(*bytes.Buffer) error) func(<-chan *LineData) {
 	growLength := len(indexString) + len(itemFormat) + 2 /* two newlines */ - 6 /* 3 formatters at 2 chars each */
 	//the actual worker function
 	return func(lines <-chan *LineData) {
@@ -40,7 +40,6 @@ func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, uploa
 
 		var pool sync.Pool
 		pool.New = func() interface{} {
-			fmt.Fprintf(os.Stderr, "[?] Creating a new buffer...\n")
 			buffer := bytes.Buffer{}
 			return &buffer
 		}
@@ -52,15 +51,14 @@ func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, uploa
 		//note to self: put a sync.Pool here with a New that returns a new buffer, and use it to pass a buffer instance to the http func below
 
 		count := 0 //keep a running count of the number of lines we've processed (the number of lines in buffer is therefore 2 * count)
-		uploadSeam := make(chan bool, 5)
 
 		flush := func() { //create a flushing function (sends HTTP request)
 			//fmt.Fprintf(os.Stderr, "%d\n", count)
-			uploadSeam <- true
+			maxHttp <- true
 			go func(buf *bytes.Buffer) { //split off to do our HTTP request work
 				defer func() {
           pool.Put(buf)
-          <-uploadSeam
+          <-maxHttp
         }()
 				err := uploadFunc(buf)
 				if err != nil {
@@ -93,11 +91,6 @@ func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, uploa
 		if count > 0 { //if we've got extra stuff left, we should flush... seeing as the channel is closed, this will be the final flush
 			flush()
 		}
-		for i := 0; i < cap(uploadSeam); i++ {
-			uploadSeam <- true
-		}
-		close(uploadSeam)
-		//fmt.Fprintf(os.Stderr, "%d\n", count)
 	}
 }
 
