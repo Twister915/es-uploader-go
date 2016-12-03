@@ -20,7 +20,7 @@ func main() {
 	db_type := flag.String("type", "database", "The type of the document (it's database by default because each line is a 'database' line)")
 	maxBytes := flag.Int("max-bytes", 1000000000, "The max number of bytes to send in each batch")
 	esUrl := flag.String("es-url", "http://localhost:9200", "The base URL for Elastic Search")
-  maxUploads := flag.Int("max-uploads", 64, "The maximum total number of uploads")
+	maxUploads := flag.Int("max-uploads", 64, "The maximum total number of uploads")
 
 	flag.Parse()
 
@@ -37,12 +37,12 @@ func main() {
 	runtime.GOMAXPROCS(*threads)
 	esFullURL := fmt.Sprintf("%s/_bulk", *esUrl)
 	indexLine := fmt.Sprintf("{\"index\":{\"_index\":\"%s\",\"_type\":\"%s\"}}", *index, *db_type)
-  maxUploadChan := make(chan bool, *maxUploads)
-	in, wg := startLineReaderPool((*batchSize) * (*workers) * 2, *workers, processLinesFunc(indexLine, documentFormat, *batchSize, *maxBytes, maxUploadChan, uploadToESFunc(esFullURL)))
+	maxUploadChan := make(chan bool, *maxUploads)
+	in, wg := startLineReaderPool((*batchSize)*(*workers)*2, *workers, processLinesFunc(indexLine, documentFormat, *batchSize, *maxBytes, maxUploadChan, uploadToESFunc(esFullURL)))
 
 	go func(in chan<- *LineData, startingDir string) {
-    wg.Add(1)
-    defer wg.Done()
+		wg.Add(1)
+		defer wg.Done()
 		handleFile := func(filePath string, fileName string) int64 {
 			file, err := os.Open(filePath)
 			if err != nil {
@@ -93,14 +93,14 @@ func main() {
 		totalLines = handleDir(startingDir)
 
 		close(in)
-    for i := 0; i < cap(maxUploadChan); i++ {
-      maxUploadChan <- true
-    }
-    close(maxUploadChan)
+		for i := 0; i < cap(maxUploadChan); i++ {
+			maxUploadChan <- true
+		}
+		close(maxUploadChan)
 	}(in, startingDir)
 
 	wg.Wait()
 	end = time.Now()
-	linesPerSec := float64(totalLines * (1000 * 1000 * 1000)) / (float64(end.UnixNano()-start.UnixNano()))
+	linesPerSec := float64(totalLines*(1000*1000*1000)) / (float64(end.UnixNano() - start.UnixNano()))
 	fmt.Fprintf(os.Stderr, "\n\n[!] Finished everything!\n[!] Lines handled per second: %.02f\n", linesPerSec)
 }

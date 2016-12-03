@@ -57,9 +57,9 @@ func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, maxHt
 			maxHttp <- true
 			go func(buf *bytes.Buffer) { //split off to do our HTTP request work
 				defer func() {
-          pool.Put(buf)
-          <-maxHttp
-        }()
+					pool.Put(buf)
+					<-maxHttp
+				}()
 				err := uploadFunc(buf)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "[!!] Error performing upload task...\n   %s\n[!!]Retrying in one second!", err)
