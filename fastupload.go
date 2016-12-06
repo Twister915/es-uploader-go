@@ -15,28 +15,30 @@ type LineData struct {
 }
 
 //this will start the "goroutine pool" that will call the worker func with the <- version of the inChannel
-func startLineReaderPool(buffer, workers int, workerFunc func(work <-chan *LineData)) (inChan chan<- *LineData, waitGroup *sync.WaitGroup) {
+func startLineReaderPool(buffer, workers int, workerFunc func(int, <-chan *LineData)) (inChan chan<- *LineData, waitGroup *sync.WaitGroup) {
 	inCh := make(chan *LineData, buffer) //this is the actual channel
 	inChan = inCh                        //this is for the return value and changes the channel to send only
 	waitGroup = &sync.WaitGroup{}        //create a waitGroup instance and get the address (for return value named waitGroup)
 
 	for i := 0; i < workers; i++ { //create one goroutine for each worker we want
 		waitGroup.Add(1)
-		go func() {
+		go func(i int) {
 			defer waitGroup.Done() //make sure we decrement
-			workerFunc(inCh)       //hand off ("blocking" in a sense, this will truly block when reading from the in chan, most likely, since most worker funcs just range over the channel)
-		}()
+			workerFunc(i, inCh)    //hand off ("blocking" in a sense, this will truly block when reading from the in chan, most likely, since most worker funcs just range over the channel)
+		}(i)
 	}
 
 	return /* return values are named and assigned above */
 }
 
 //function currying! this sets up a worker function given some constant parameters
-func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, maxHttp chan bool, uploadFunc func(*bytes.Buffer) error) func(<-chan *LineData) {
+func processLinesFunc(indexString, itemFormat string, batch, maxBytes, maxHttp int, countChan chan<- uint64, uploadFunc func(*bytes.Buffer) error) func(int, <-chan *LineData) {
 	growLength := len(indexString) + len(itemFormat) + 2 /* two newlines */ - 6 /* 3 formatters at 2 chars each */
 	//the actual worker function
-	return func(lines <-chan *LineData) {
+	return func(id int, lines <-chan *LineData) {
+		maxHttpChan := make(chan bool, maxHttp)
 		var buffer *bytes.Buffer //create a buffer to hold the JSON representation we're building
+		var totalCount uint64
 
 		var pool sync.Pool
 		pool.New = func() interface{} {
@@ -48,21 +50,20 @@ func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, maxHt
 			buffer = pool.Get().(*bytes.Buffer)
 			buffer.Reset()
 		}
-		//note to self: put a sync.Pool here with a New that returns a new buffer, and use it to pass a buffer instance to the http func below
 
 		count := 0 //keep a running count of the number of lines we've processed (the number of lines in buffer is therefore 2 * count)
 
 		flush := func() { //create a flushing function (sends HTTP request)
 			//fmt.Fprintf(os.Stderr, "%d\n", count)
-			maxHttp <- true
+			maxHttpChan <- true
 			go func(buf *bytes.Buffer) { //split off to do our HTTP request work
 				defer func() {
 					pool.Put(buf)
-					<-maxHttp
+					<-maxHttpChan
 				}()
 				err := uploadFunc(buf)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "[!!] Error performing upload task...\n   %s\n[!!]Retrying in one second!", err)
+					fmt.Fprintf(os.Stderr, "[!! W-%d] Error performing upload task...\n   %s", id, err)
 				}
 			}(buffer)
 			resetBuf() //and reset state (buffer & count)
@@ -70,6 +71,7 @@ func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, maxHt
 		}
 
 		resetBuf()
+		fmt.Printf("[W-%d] Worker spawned!\n", id)
 		for lineData := range lines { //"range lines" will do exactly what we want here... when it's closed, we break out, and when it's open, we always get the next line we can process
 			line := lineData.LineContent //the actual LINE is here
 			jsonFormat(&line)            //pass it through our pretty efficient JSON escape thingy
@@ -82,6 +84,7 @@ func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, maxHt
 			buffer.WriteRune('\n')
 
 			count++ //we've added one thing, so increment the number of things
+			totalCount++
 
 			if count >= batch || buffer.Len() > maxBytes { //and if we've hit a threshold, we should immediately flush
 				flush()
@@ -91,6 +94,12 @@ func processLinesFunc(indexString, itemFormat string, batch, maxBytes int, maxHt
 		if count > 0 { //if we've got extra stuff left, we should flush... seeing as the channel is closed, this will be the final flush
 			flush()
 		}
+		for i := 0; i < cap(maxHttpChan); i++ {
+			maxHttpChan <- true
+		}
+		fmt.Printf("[W-%d] Shutting down....\n", id)
+		close(maxHttpChan)
+		countChan <- totalCount
 	}
 }
 
